@@ -156,6 +156,7 @@ class SlotPart(BaseModel):
     max_chars: int = 20
     demo: str = ""
     color: str | None = None       # цвет части (синий заголовок + серый текст в одной фигуре)
+    lines: int = 1                 # сколько строк образца (через a:br) занимает часть — ручной перенос одной фразы
 
 
 class TextSlot(BaseModel):

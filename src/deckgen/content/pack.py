@@ -82,7 +82,8 @@ def pack_from_text(text: str, *, title: str | None = None, purpose: str | None =
 
 def extract_facts(text: str, limit: int = 40) -> list[Fact]:
     """Каждое предложение с цифрой — факт. Детерминированно: модель цифры не придумывает, а цитирует."""
-    sents = re.split(r"(?<=[.!?…])\s+|\n+", text)
+    from .textfix import unwrap
+    sents = re.split(r"(?<=[.!?…])\s+|\n+", unwrap(text))   # фраза, перенесённая на две строки, — один факт
     out, seen = [], set()
     for s in sents:
         s = s.strip(" -•*\t")
@@ -128,8 +129,18 @@ def _table(tid: str, rows: list[list[str]]) -> DataTable:
     tid = re.sub(r"[^\w]+", "_", tid).strip("_").lower() or "table"
     width = max(len(r) for r in rows)
     rows = [r + [""] * (width - len(r)) for r in rows]
-    return DataTable(id=tid, title=tid.replace("_", " "), columns=[c.strip() for c in rows[0]],
+    columns = [c.strip() for c in rows[0]]
+    return DataTable(id=tid, title=_table_name(tid, columns), columns=columns,
                      rows=[[c.strip() for c in r] for r in rows[1:]])
+
+
+def _table_name(tid: str, columns: list[str]) -> str:
+    """Имя файла («adoption_by_month») на русском слайде — брак: берём названия столбцов с показателями."""
+    stem = tid.replace("_", " ")
+    if re.search(r"[а-яё]", stem, re.I) or not any(re.search(r"[а-яё]", c, re.I) for c in columns):
+        return stem
+    name = " и ".join([c for c in columns[1:] if c][:2] or columns[:1])
+    return name[:1].upper() + name[1:]
 
 
 def _front_matter(text: str) -> tuple[dict, str]:

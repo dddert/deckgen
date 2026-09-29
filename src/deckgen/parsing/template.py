@@ -16,7 +16,7 @@ from .analyzer import analyze_slide
 from .design import extract_design, font_usage
 from .fonts import TextMeasurer, find_font_file
 
-PARSER_VERSION = "4.2"
+PARSER_VERSION = "4.4"
 
 Classifier = Callable[[list[TemplateSlide], list[Path]], list[TemplateSlide]]
 Renderer = Callable[[Path, Path], list[Path]]

@@ -77,6 +77,58 @@ def test_duplicate_and_empty_slides(parsed, settings, tmp_path, pack):
     assert 2 in [f.slide_index for f in _ids(rep, "integrity.empty_slide")]
 
 
+def _ordinal_slide(parsed):
+    for tm in parsed.values():
+        for t in tm.slides:
+            ords = sorted((s for s in t.texts if s.role.value == "ordinal" and s.item is not None), key=lambda s: s.item)
+            if t.usable and len(ords) >= 3:
+                return tm, t, ords
+    pytest.skip("в шаблонах нет слайда с нумерацией карточек")
+
+
+def test_ordinal_sequence_and_renumber(parsed, settings, tmp_path, pack):
+    from deckgen.audit.fixes import FixContext, apply_fixes
+    tm, t, ords = _ordinal_slide(parsed)
+    demo0 = ords[0].demo_text.strip()
+    bad = ["3", "1", "1"] + ["9"] * (len(ords) - 3)
+    ps = PlannedSlide(index=0, template_slide=t.index, layout_part=t.layout_part, kind=t.kind,
+                      texts=[TextFill(shape_id=s.shape_id, paragraphs=[v], role=s.role) for s, v in zip(ords, bad)])
+    pptx, plan = _build(tm, tmp_path, [ps])
+    rep = _audit(tm, settings, pptx, plan, pack)
+    found = _ids(rep, "content.ordinal_sequence")
+    assert found and found[0].fix_id == "renumber_ordinals"
+    assert apply_fixes(plan, found, None, FixContext(tm=tm, pack=pack, llm=None, prompts=None))
+    got = [tf.paragraphs[0] for tf in plan.slides[0].texts]
+    want = [f"{n:02d}" if demo0.startswith("0") else str(n) for n in range(1, len(ords) + 1)]
+    assert [g.rstrip(".)") for g in got] == want
+    pptx2 = build_pptx(plan, tm, tmp_path / "b.pptx")
+    assert not _ids(_audit(tm, settings, pptx2, plan, pack), "content.ordinal_sequence")
+
+
+def test_text_quality_and_hygiene(parsed, settings, tmp_path, pack):
+    from deckgen.audit.fixes import FixContext, apply_fixes
+    tm = by_name(parsed, "WorkSpace")
+    t = tm.slides[5]
+    title = next(s for s in t.texts if s.role.value == "title")
+    body = next(s for s in t.texts if s.role.value == "body")
+    ps = PlannedSlide(index=0, template_slide=5, layout_part=t.layout_part, kind=t.kind,
+                      texts=[TextFill(shape_id=title.shape_id, paragraphs=["Итоги пилoта"], role=title.role),
+                             TextFill(shape_id=body.shape_id, paragraphs=["ассистент сократил сократил время ,  ответа в"],
+                                      role=body.role)])
+    pptx, plan = _build(tm, tmp_path, [ps])
+    rep = _audit(tm, settings, pptx, plan, pack)
+    found = _ids(rep, "content.text_quality")
+    assert {f.shape_id for f in found} >= {title.shape_id, body.shape_id}
+    apply_fixes(plan, found, None, FixContext(tm=tm, pack=pack, llm=None, prompts=None))
+    texts = {tf.shape_id: tf.paragraphs[0] for tf in plan.slides[0].texts}
+    assert texts[title.shape_id] == "Итоги пилота"                     # латинская «o» → кириллическая
+    assert texts[body.shape_id] == "Ассистент сократил время, ответа"
+    pptx2 = build_pptx(plan, tm, tmp_path / "b.pptx")
+    left = [f for f in _audit(tm, settings, pptx2, plan, pack).findings
+            if f.check_id == "content.text_quality" and f.shape_id in (title.shape_id, body.shape_id)]
+    assert not left
+
+
 # где проверяется каждая детерминированная проверка реестра (AUDIT.md строится из того же реестра)
 COVERAGE = {
     "layout.out_of_bounds": "test_clean_title_slide + e2e HARD", "layout.overlap": "e2e (агенда WorkSpace)",
@@ -92,6 +144,8 @@ COVERAGE = {
     "integrity.empty_slide": "test_duplicate_and_empty_slides", "integrity.raster_slide": "e2e HARD",
     "integrity.chart_labels": "test_fixes", "integrity.duplicate_slides": "test_duplicate_and_empty_slides",
     "content.numbers_grounded": "test_detects_overflow_leftover_numbers",
+    "content.ordinal_sequence": "test_ordinal_sequence_and_renumber",
+    "content.text_quality": "test_text_quality_and_hygiene",
 }
 
 

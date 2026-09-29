@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pydantic import BaseModel, Field, create_model
 
 from ..content.grounding import numbers_in, source_numbers, strip_ungrounded
+from ..content.textfix import sanitize, unwrap
 from ..llm.client import ChatMessage, LLMClient, LLMError
 from ..models import ContentPack, OutlineSlide, SlotRole, TemplateSlide, TextSlot
 from ..prompts import PromptRegistry
@@ -106,7 +107,7 @@ def schema_for(sp: list[SlotSpec]) -> type[BaseModel]:
 
 
 def write_slide(o: OutlineSlide, t: TemplateSlide, keep_items: int, pack: ContentPack, v: Variant, deck: dict,
-                llm: LLMClient | None, prompts: PromptRegistry | None) -> tuple[dict[str, list[str]], str]:
+                llm: LLMClient | None, prompts: PromptRegistry | None, proof: bool = False) -> tuple[dict[str, list[str]], str]:
     """-> ({shape_id: [абзацы или части]}, 'llm'|'offline')"""
     sp = specs(t, keep_items, v)
     if not sp:
@@ -124,14 +125,50 @@ def write_slide(o: OutlineSlide, t: TemplateSlide, keep_items: int, pack: Conten
                 kind=o.kind.value, title=o.title, message=o.message, points=o.points, facts=facts,
                 context=_context(o, pack), style_note=v.style_note, slots=[s.__dict__ for s in sp], n_items=keep_items,
             )
-            ans = llm.complete_json([ChatMessage("user", prompt)], schema_for(sp), max_tokens=1600, temperature=0.5)
+            ans = llm.complete_json([ChatMessage("user", prompt)], schema_for(sp), max_tokens=1600, temperature=0.3)
             raw = {s.slot.shape_id: _as_list(getattr(ans, s.key)) for s in sp}
             mode = "llm"
         except LLMError:
             raw = None
     if raw is None:
         raw = offline_texts(o, sp, pack)
-    return clean(raw, sp, pack, o), mode
+    out = clean(raw, sp, pack, o)
+    if proof and mode == "llm":
+        out = proofread(o, out, sp, pack, llm, prompts)
+    return out, mode
+
+
+def proofread(o: OutlineSlide, texts: dict[str, list[str]], sp: list[SlotSpec], pack: ContentPack,
+              llm: LLMClient | None, prompts: PromptRegistry | None) -> dict[str, list[str]]:
+    """Корректура моделью: только орфография/пунктуация. Правка принимается, если цифры те же и текст
+    почти не изменился (difflib ≥ 0,8) — корректор не может ни «улучшить» смысл, ни поменять число."""
+    from difflib import SequenceMatcher
+    if llm is None or prompts is None:
+        return texts
+    roles = {s.slot.shape_id: s.slot.role for s in sp}
+    keys = {}
+    for sid, vals in texts.items():
+        if roles.get(sid) in (SlotRole.number, SlotRole.ordinal, SlotRole.name):
+            continue
+        for i, v in enumerate(vals):
+            if v and len(v) >= 12 and re.search(r"[а-яё]", v, re.I):
+                keys[f"k{len(keys)}"] = (sid, i, v)
+    if not keys:
+        return texts
+    try:
+        schema = create_model("Proofread", **{k: (str, ...) for k in keys})
+        prompt = prompts.render("proofread", title=o.title, items=[{"key": k, "text": v} for k, (_, _, v) in keys.items()])
+        ans = llm.complete_json([ChatMessage("user", prompt)], schema, max_tokens=1200, temperature=0.0)
+    except LLMError:
+        return texts
+    out = {sid: list(vals) for sid, vals in texts.items()}
+    for k, (sid, i, old) in keys.items():
+        new = sanitize(str(getattr(ans, k, "") or "").strip(), pack.language or "ru")
+        if roles.get(sid) == SlotRole.bullets:
+            new = new.rstrip(";.")
+        if new and new != old and numbers_in(new) == numbers_in(old)                 and SequenceMatcher(None, old.lower(), new.lower()).ratio() >= 0.8:
+            out[sid][i] = new
+    return out
 
 
 def _as_list(v) -> list[str]:
@@ -148,7 +185,7 @@ def _facts_for(o: OutlineSlide, pack: ContentPack) -> list:
 
 def _context(o: OutlineSlide, pack: ContentPack, limit: int = 900) -> str:
     words = {w[:5] for w in re.findall(r"[а-яёa-z]{4,}", (o.title + " " + o.message + " " + " ".join(o.points)).lower())}
-    sents = re.split(r"(?<=[.!?])\s+|\n+", pack.brief)
+    sents = re.split(r"(?<=[.!?])\s+|\n+", unwrap(pack.brief))
     best = sorted(sents, key=lambda s: -len(words & {w[:5] for w in re.findall(r"[а-яёa-z]{4,}", s.lower())}))
     out, n = [], 0
     for s in best[:8]:
@@ -161,8 +198,10 @@ def _context(o: OutlineSlide, pack: ContentPack, limit: int = 900) -> str:
 
 def clean(raw: dict[str, list[str]], sp: list[SlotSpec], pack: ContentPack, o: OutlineSlide) -> dict[str, list[str]]:
     sources = source_numbers(pack)
+    lang = pack.language or "ru"
     out: dict[str, list[str]] = {}
     seen: set[str] = set()
+    heads: dict[int, list[str]] = {}             # заголовки карточек: текст карточки не должен их повторять
     for s in sp:
         vals = raw.get(s.slot.shape_id, [])
         res = []
@@ -176,20 +215,65 @@ def clean(raw: dict[str, list[str]], sp: list[SlotSpec], pack: ContentPack, o: O
                 txt = _grounded_number(txt, sources)
             elif txt and s.slot.role != SlotRole.title:
                 txt = strip_ungrounded(txt, sources)
+            txt = sanitize(txt, lang, sentence=part_role not in (SlotRole.number, SlotRole.ordinal))
             if s.slot.role == SlotRole.bullets:
                 txt = txt.rstrip(";.")
+            if part_role == SlotRole.heading:
+                heads.setdefault(s.item if s.item is not None else -1, []).append(txt)
+            elif part_role in (SlotRole.body, SlotRole.caption, SlotRole.bullets):
+                txt = _drop_repeat(txt, heads.get(s.item if s.item is not None else -1, []), lang)
             res.append(txt)
+        if s.slot.parts and len(s.slot.parts) > 1:
+            res = _drop_prefix_parts(res)
         if s.slot.role == SlotRole.title:
-            t = res[0] if res and res[0] else o.title
+            t = res[0] if res and res[0] else sanitize(o.title, lang)
             if [n for n in numbers_in(t) if n not in sources and float(n) > 12]:
-                t = o.title
+                t = sanitize(o.title, lang)
             res = [t.rstrip(".")]
         key = " ".join(res).lower()
-        if key and key in seen and s.item is not None:
-            res = [""] * len(res)                # дубль в соседней карточке
+        if key.strip() and key in seen and s.slot.role not in (SlotRole.title, SlotRole.number):
+            res = [""] * len(res)                # тот же текст уже есть на слайде (соседняя карточка, подпись)
         seen.add(key)
-        out[s.slot.shape_id] = [r for r in res if r] if s.slot.role == SlotRole.bullets else res
+        if s.slot.role == SlotRole.bullets:     # пустые и повторные пункты списка
+            uniq, keys = [], set()
+            for r in res:
+                if r and r.lower() not in keys:
+                    uniq.append(r)
+                    keys.add(r.lower())
+            res = uniq
+        out[s.slot.shape_id] = res
     return out
+
+
+def _drop_prefix_parts(parts: list[str]) -> list[str]:
+    """Части одной фигуры: «Руководители» + «Руководители продуктовых направлений…» — повтор в двух строках
+    подряд. Следующая часть содержит всю мысль, поэтому пустеет короткая (пустая часть при сборке удаляется)."""
+    parts = list(parts)
+    for i, a in enumerate(parts):
+        al = a.lower().rstrip(" .")
+        if len(al) < 4:
+            continue
+        if any(b.lower().startswith(al) and len(b) > len(al) + 3 for b in parts[i + 1:]):
+            parts[i] = ""
+    return parts
+
+
+def _drop_repeat(text: str, heads: list[str], lang: str) -> str:
+    """Текст карточки начинается с её же заголовка («Скорость ответа» / «Скорость ответа выросла…») —
+    убираем повтор; совпадает целиком — текст пустой."""
+    low = text.lower()
+    for h in heads:
+        hl = h.lower().strip()
+        if len(hl) < 4:
+            continue
+        if low.strip(" .") == hl.strip(" ."):
+            return ""
+        rest = text[len(hl):]
+        # снимаем повтор только на границе фразы («Скорость ответа — выросла…»), иначе остаётся обрубок
+        # из середины предложения («…месяца у трёх клиентов»): повтор лучше оборванного текста
+        if low.startswith(hl) and len(rest) >= 15 and re.match(r"\s*[.:;—–-]", rest):
+            return sanitize(rest.lstrip(" .,:;—–-"), lang)
+    return text
 
 
 def _grounded_number(text: str, sources: set[str]) -> str:
@@ -243,19 +327,48 @@ def offline_texts(o: OutlineSlide, sp: list[SlotSpec], pack: ContentPack) -> dic
 
 
 def _heading(text: str) -> str:
-    words = re.sub(r"[^\w\s%-]", " ", text).split()
-    return " ".join(words[:3]).capitalize() if words else ""
+    """Короткий заголовок карточки из пункта: до тире/двоеточия или первые слова, регистр слов сохраняется
+    («NPS», «AI» не превращаются в «Nps», «ai»), без предлога в конце."""
+    from .fitter import clean_tail, cut_tail
+    text = re.sub(r"\s+", " ", text or "").strip()
+    head = re.split(r"\s[—–-]\s|:\s|[.;!?](?:\s|$)", text, maxsplit=1)[0].strip()
+    words = head.split()
+    if len(words) > 4:
+        # цифра на границе обрезки забирает единицу («Пилот длился 4 месяца»), иначе хвост без смысла снимается
+        k = 4 if re.fullmatch(r"[\d.,]+", words[2]) else 3
+        words = cut_tail(clean_tail(" ".join(words[:k])).split())
+    res = clean_tail(" ".join(words)).strip(" ,;:«»\"()")
+    return sanitize(res) if res else ""
+
+
+_UNIT_WORD = {"часа": "ч", "часов": "ч", "час": "ч", "минут": "мин", "минуты": "мин", "минута": "мин",
+              "секунд": "с", "секунды": "с", "процентов": "%", "процента": "%", "процент": "%"}
+_NUM_UNIT = r"(\d+(?:[.,]\d+)?)\s*(%|ч\b|час\w*|мин\w*|сек\w*|млн|млрд|тыс\.?|₽|раз\w*)?"
 
 
 def _fact_number(fact) -> str:
+    """Цифра факта: сначала value/unit из материалов (они точные), текст — только если их нет.
+    «Время ответа снизилось с 12 до 4 минут» при value=4 → «4 мин», а не первое число «12»."""
     if fact is None:
         return ""
-    m = re.search(r"(\d+(?:[.,]\d+)?)\s*(%|ч\b|час\w*|мин\w*|сек\w*|млн|млрд|тыс\.?|₽|раз\w*)?", fact.text)
-    if not m:
-        return ""
-    unit = m.group(2) or ""
-    unit = {"часа": "ч", "часов": "ч", "час": "ч", "минут": "мин", "минуты": "мин", "секунд": "с"}.get(unit, unit)
-    return f"{m.group(1)} {unit}".strip() if unit and unit != "%" else m.group(1) + unit
+    nums = list(re.finditer(_NUM_UNIT, fact.text))
+    m = None
+    if fact.value not in (None, ""):
+        want = numbers_in(str(fact.value))
+        m = next((x for x in nums if want and numbers_in(x.group(1)) == want[:1]), None)
+        if m is None and want:
+            unit = _UNIT_WORD.get((fact.unit or "").strip(), (fact.unit or "").strip())
+            val = want[0].replace(".", ",")
+            return val + unit if unit in ("%", "") else f"{val} {unit}"
+    if m is None:
+        if not nums:
+            return ""
+        # «с 12 до 4 минут», «12 → 4»: итог — последнее число изменения
+        m = nums[-1] if re.search(r"\bс\s+\d[^.]*\bдо\s+\d|→|->", fact.text) else nums[0]
+    unit = m.group(2) or (fact.unit or "").strip() or (nums[-1].group(2) if m is not nums[-1] else "") or ""
+    unit = _UNIT_WORD.get(unit, unit)
+    num = m.group(1).replace(".", ",")
+    return f"{num} {unit}".strip() if unit and unit != "%" else num + unit
 
 
 def _cut(text: str, limit: int) -> str:
@@ -277,7 +390,7 @@ def shorten(o: OutlineSlide, items: list[tuple[str, str, int]], llm: LLMClient |
             prompt = prompts.render("shorten", title=o.title,
                                     items=[{"key": k, "limit": lim, "length": len(text), "text": text} for k, _, text, lim in keys])
             ans = llm.complete_json([ChatMessage("user", prompt)], schema, max_tokens=800, temperature=0.2)
-            return {sid: str(getattr(ans, k)).strip() for k, sid, _, _ in keys}
+            return {sid: sanitize(str(getattr(ans, k)).strip()) for k, sid, _, _ in keys}
         except LLMError:
             pass
-    return {sid: _cut(text, lim) for sid, text, lim in items}
+    return {sid: sanitize(_cut(text, lim)) for sid, text, lim in items}

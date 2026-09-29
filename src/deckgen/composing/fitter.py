@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from ..models import Box, TextSlot
@@ -87,6 +88,25 @@ def clean_tail(text: str) -> str:
     return " ".join(words).rstrip(",;:—–-( ")
 
 
+# окончания прилагательных/причастий в косвенных падежах: без существительного фраза оборвана
+# («Руководители продуктовых», «Рост числа активных»)
+_ADJ_TAIL = re.compile(r"[а-яё]{3,}(?:ых|их|ого|его|ому|ему|ыми|ими)$")
+_BARE_NUM = re.compile(r"[\d.,]+")
+
+
+def cut_tail(words: list[str]) -> list[str]:
+    """Хвост после обрезки по словам: цифра без единицы («Пилот длился 4») и прилагательное без
+    существительного — признаки оборванной фразы. Год («до конца 2026») — законченная мысль."""
+    words = list(words)
+    while len(words) > 1:
+        w = words[-1].strip(",;:«»\"()").lower()
+        if (_BARE_NUM.fullmatch(w) and not re.fullmatch(r"(?:19|20)\d\d", w)) or _ADJ_TAIL.fullmatch(w):
+            words.pop()
+            continue
+        break
+    return words
+
+
 def truncate_words(text: str, limit: int) -> str:
     """Крайний случай: режем по границе предложения/фразы/слова. Многоточия нет: «…» на слайде читается как
     ошибка вёрстки, а оборванная фраза без служебного слова в конце — как законченная мысль."""
@@ -94,10 +114,10 @@ def truncate_words(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
     cut = text[:limit + 1]
-    for sep in (". ", "; ", ": ", " — ", " – ", ", "):
+    for sep in (". ", "; ", ": ", " — ", " – ", ", ", " (", " и ", " или "):
         k = cut.rfind(sep)
         if k > limit * 0.5:
-            return clean_tail(cut[:k])
+            return _close(clean_tail(cut[:k]))
     words, out = text.split(), ""
     for w in words:
         if len(out) + len(w) + (1 if out else 0) > limit:
@@ -105,4 +125,13 @@ def truncate_words(text: str, limit: int) -> str:
         out = f"{out} {w}".strip()
     if not out:
         return words[0]                       # одно длинное слово — оставляем целиком (fitter уменьшит кегль)
-    return clean_tail(out)
+    return _close(clean_tail(" ".join(cut_tail(clean_tail(out).split()))))
+
+
+def _close(text: str) -> str:
+    """Обрезка внутри скобок/кавычек: «Развёртывание (on-premise» → «Развёртывание»."""
+    for op, cl in (("(", ")"), ("«", "»")):
+        k = text.rfind(op)
+        if k >= 0 and text.count(op) > text.count(cl):
+            text = clean_tail(text[:k]) if k > 0 else text[1:]
+    return text

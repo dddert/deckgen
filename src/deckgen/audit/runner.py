@@ -6,7 +6,7 @@ import time
 from ..llm.client import LLMClient
 from ..models import AuditReport
 from ..prompts import PromptRegistry
-from . import checks_density, checks_integrity, checks_layout, checks_template  # noqa: F401 — регистрация @check
+from . import checks_content, checks_density, checks_integrity, checks_layout, checks_template  # noqa: F401 — регистрация @check
 from .base import REGISTRY, AuditContext
 from .semantic import catalog as semantic_catalog
 from .semantic import run_semantic

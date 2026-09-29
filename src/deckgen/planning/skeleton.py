@@ -13,6 +13,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from ..content.grounding import numbers_in, source_numbers
+from ..content.textfix import sanitize, unwrap
 from ..llm.client import ChatMessage, LLMClient, LLMError
 from ..models import ContentPack, DataTable, Outline, OutlineSlide, SlideKind, TemplateModel, VizSpec
 from ..prompts import PromptRegistry
@@ -183,8 +184,13 @@ def normalize(o: Outline, pack: ContentPack, tm: TemplateModel, target: int) -> 
         mid = [i for i, s in enumerate(o.slides[1:-1], start=1)]
         sec = [i for i in mid if o.slides[i].kind == SlideKind.section]
         o.slides.pop(sec[-1] if sec else mid[-1])
+    lang = pack.language or "ru"
+    o.title = sanitize(o.title, lang)
     for i, s in enumerate(o.slides):
         s.index = i
+        s.title = sanitize(s.title, lang).rstrip(".")
+        s.message = sanitize(s.message, lang) if s.message else s.message
+        s.points = [p for p in (sanitize(x, lang) for x in s.points) if p]
     return o
 
 
@@ -198,7 +204,7 @@ def _viz_kind(kind: SlideKind, avail: set[SlideKind]) -> SlideKind:
 # ----------------------------------------------------------------------------- эвристика (без модели)
 
 def _sentences(text: str) -> list[str]:
-    s = re.split(r"(?<=[.!?…])\s+|\n+", text)
+    s = re.split(r"(?<=[.!?…])\s+|\n+", unwrap(text))     # жёсткие переносы брифа — не границы предложений
     return [x.strip(" -•*#\t") for x in s if len(x.strip()) > 20]
 
 

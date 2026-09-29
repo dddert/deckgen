@@ -12,6 +12,7 @@ from pydantic import create_model
 
 from ..composing.fitter import truncate_words
 from ..content.grounding import source_numbers, strip_ungrounded
+from ..content.textfix import sanitize
 from ..llm.client import ChatMessage, LLMClient, LLMError
 from ..models import ContentPack, DeckPlan, Finding, PlannedSlide, SlotRole, StyleOp, TemplateModel
 from ..ooxml.colors import apca_lc, best_text_color, contrast_ratio, distance
@@ -173,8 +174,10 @@ def shorten_text(plan, f, c) -> bool:
         return False
     res = _shorten_llm(ps, [(f"{tf.shape_id}_{i}", p, 90) for i, p in long], c)
     for i, p in long:
-        new = (res or {}).get(f"{tf.shape_id}_{i}") or " ".join(p.split()[: c.max_words])
-        tf.paragraphs[i] = " ".join(new.split()[: c.max_words]).rstrip(",;:")
+        new = (res or {}).get(f"{tf.shape_id}_{i}") or p
+        if len(new.split()) > c.max_words:          # обрезка по границе фразы, без предлога и скобки в конце
+            new = truncate_words(new, len(" ".join(new.split()[: c.max_words])))
+        tf.paragraphs[i] = sanitize(new, _lang(c)).rstrip(",;:")
     return True
 
 
@@ -292,6 +295,7 @@ def rewrite(plan, f, c) -> bool:
         if tf is None or not new:
             continue
         new = strip_ungrounded(new, src) if src else new
+        new = sanitize(new, _lang(c), sentence=tf.role not in _PLAIN)
         tf.paragraphs = [p.strip(" •-") for p in new.split("\n") if p.strip()] if tf.role == SlotRole.bullets else [new]
         if tf.role == SlotRole.title:
             ps.title = new
@@ -307,9 +311,67 @@ def _shorten_llm(ps: PlannedSlide, items: list[tuple[str, str, int]], c: FixCont
         prompt = c.prompts.render("shorten", title=ps.title,
                                   items=[{"key": k, "limit": lim, "length": len(t), "text": t} for k, (_, t, lim) in keys.items()])
         ans = c.llm.complete_json([ChatMessage("user", prompt)], schema, temperature=0.2, max_tokens=900)
-        return {orig: str(getattr(ans, k)) for k, (orig, _, _) in keys.items()}
+        return {orig: sanitize(str(getattr(ans, k)), _lang(c)) for k, (orig, _, _) in keys.items()}
     except LLMError:
         return None
+
+
+_PLAIN = {SlotRole.number, SlotRole.ordinal, SlotRole.label, SlotRole.name, SlotRole.footer}
+
+
+def _lang(c: FixContext) -> str:
+    return (c.pack.language if c.pack else None) or "ru"
+
+
+@fix("text_hygiene")
+def text_hygiene(plan, f, c) -> bool:
+    """Детерминированная вычитка текстов слайда (content.text_quality): алфавиты, повторы, пунктуация, хвосты."""
+    ps = _slide(plan, f)
+    if ps is None:
+        return False
+    changed = False
+    for tf in ps.texts:
+        if tf.role in (SlotRole.ordinal, SlotRole.footer) or (f.shape_id and tf.shape_id != f.shape_id):
+            continue
+        new = [sanitize(p, _lang(c), sentence=tf.role not in _PLAIN) for p in tf.paragraphs]
+        if tf.role == SlotRole.bullets:
+            new = [p for p in new if p.strip()] or [""]
+        if new != tf.paragraphs:
+            tf.paragraphs = new
+            changed = True
+            if tf.role == SlotRole.title:
+                ps.title = new[0]
+    return changed
+
+
+@fix("renumber_ordinals")
+def renumber_ordinals(plan, f, c) -> bool:
+    """Номера шагов по порядку карточек (content.ordinal_sequence): 1..n в формате образца («01», «1.»)."""
+    from ..composing.composer import ordinal_text
+    ps = _slide(plan, f)
+    if ps is None:
+        return False
+    t = c.tm.slides[ps.template_slide]
+    rows = []
+    for tf in ps.texts:
+        slot = t.slot(tf.shape_id)
+        if tf.role != SlotRole.ordinal or slot is None:
+            continue
+        demo = slot.demo_text.strip()
+        rows.append(((slot.item if slot.item is not None else 10_000, int(re.sub(r"\D", "", demo) or 0),
+                      slot.box.cy, slot.box.cx), tf, demo))
+    if len(rows) < 2:
+        return False
+    rows.sort(key=lambda r: r[0])
+    free = [int(re.sub(r"\D", "", d) or 0) for k, _, d in rows if k[0] == 10_000]
+    start = 1 if rows[0][0][0] != 10_000 else (min(free) or 1)
+    changed = False
+    for n, (_, tf, demo) in enumerate(rows, start=start):
+        val = ordinal_text(n, demo)
+        if tf.paragraphs != [val]:
+            tf.paragraphs = [val]
+            changed = True
+    return changed
 
 
 def apply_fixes(plan: DeckPlan, findings: list[Finding], selected: set[str] | None, c: FixContext) -> list[str]:

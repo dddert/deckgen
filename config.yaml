@@ -61,12 +61,13 @@ prompts:
   skills_dir: ./skills
   # Закреплённые версии агентов (меняются здесь, не в коде; в артефакты пишутся фактические)
   skeleton: v1
-  slide_writer: v2
-  shorten: v1
+  slide_writer: v3
+  shorten: v2
   slide_classifier: v1
   audit_semantic: v2
   image_prompt: v1
-  rewrite: v1
+  rewrite: v2
+  proofread: v1
 
 parsing:
   cache: true
@@ -80,6 +81,7 @@ composing:
   min_font_scale: 0.8            # ниже — не ужимаем, а сокращаем текст
   shorten_rounds: 1              # сколько раз просить модель сократить непоместившийся текст
   reflow_items: true             # оставшиеся карточки равномерно распределяются по месту удалённых
+  proofread: true                # корректура текстов моделью: только орфография/пунктуация, цифры не меняются
 
 audit:
   contrast_min: 4.5              # WCAG 2 — только в отчёт; решение принимается по APCA (|Lc| ≥ 45 крупный / 55 обычный)
@@ -94,7 +96,7 @@ audit:
   semantic_checks: true          # VLM по картинке слайда (недетерминированные)
   # что исправляется без вопроса (id проверки или исправления); остальное — по выбору пользователя в UI
   auto_fix: [text_overflow, leftover_placeholder, integrity.empty_slide, integrity.duplicate_slides, off_palette_color,
-             low_contrast, chart_labels, trim_bullets, shorten_text, strip_numbers]
+             low_contrast, chart_labels, trim_bullets, shorten_text, strip_numbers, text_hygiene, renumber_ordinals]
   auto_fix_rounds: 2
 
 export:

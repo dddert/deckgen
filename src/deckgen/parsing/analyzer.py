@@ -141,14 +141,7 @@ def analyze_slide(rs: RSlide, measurer: TextMeasurer, slide_w_in: float, slide_h
                      slide_w_in, slide_h_in, decor_text, chart_ids | in_chart,
                      occ=(shapes, all_decor, reader, ts.bg_color) if reader is not None else None)
         ts.texts.append(slot)
-    seq = sorted((int(t.demo_text.strip().rstrip(".)")) for t in ts.texts
-                  if t.role in (SlotRole.ordinal, SlotRole.number) and _ORDINAL.match(t.demo_text or "")))
-    numbered = len(seq) >= 3 and seq == list(range(seq[0], seq[0] + len(seq)))   # «1 2 3 … 8» — нумерация списка
-    for t in ts.texts:                         # одиночное «01» вне ряда — показатель, а не номер шага
-        if t.role in (SlotRole.ordinal, SlotRole.number) and _ORDINAL.match(t.demo_text or "") and numbered:
-            t.role = SlotRole.ordinal
-        elif t.role == SlotRole.ordinal and t.item is None:
-            t.role = SlotRole.number
+    _mark_ordinals(ts.texts, items, by_id)
 
     ts.items = items
     ts.layout_photos = any(d.kind == "pic" and (d.image_part in photos or d.image_part in (photo_like or set()))
@@ -166,6 +159,41 @@ def analyze_slide(rs: RSlide, measurer: TextMeasurer, slide_w_in: float, slide_h
     ts.kind, ts.confidence, ts.name = _classify(rs, ts, title_shape, slide_text, virtual)
     ts.usable, ts.reason = _usable(shapes, ts, max_shapes)
     return ts
+
+
+# ----------------------------------------------------------------------------- нумерация
+
+def _mark_ordinals(texts: list[TextSlot], items: list[ItemGroup], by_id: dict[str, RShape]) -> None:
+    """Номер шага («01», «2.») — только в ряду различных чисел, по одному на элемент.
+
+    «10 10 10» в карточках — показатели, а не нумерация: иначе генератор напишет «3, 4, 4».
+    Номера, лежащие рядом с карточками, но вне их групп, привязываем к ближайшей карточке —
+    иначе при удалении лишних карточек «05», «06» остаются сиротами."""
+    cand = [t for t in texts if t.role in (SlotRole.ordinal, SlotRole.number) and _ORDINAL.match(t.demo_text or "")]
+    cand_ids = {id(t) for t in cand}
+    seq = sorted(int(t.demo_text.strip().rstrip(".)")) for t in cand)
+    per_item = [t.item for t in cand if t.item is not None]
+    numbered = (len(seq) >= 3 and len(set(seq)) == len(seq) and len(set(per_item)) == len(per_item)
+                and seq[-1] - seq[0] <= len(seq))            # «01 02 04 05 06» — дизайнер пропустил номер, это всё ещё ряд
+    for t in texts:                            # одиночное «01» вне ряда — показатель, а не номер шага
+        if id(t) in cand_ids and numbered:
+            t.role = SlotRole.ordinal
+        elif t.role == SlotRole.ordinal and (t.item is None or not numbered):
+            t.role = SlotRole.number
+    free = [t for t in texts if t.role == SlotRole.ordinal and t.item is None]
+    if not free or len(free) != len(items):
+        return
+    near = {t.shape_id: min(items, key=lambda it: (it.box.cx - t.box.cx) ** 2 + (it.box.cy - t.box.cy) ** 2) for t in free}
+    if len({it.index for it in near.values()}) != len(free):   # не взаимно-однозначно — не угадываем
+        return
+    for t in free:
+        it = near[t.shape_id]
+        t.item = it.index
+        if t.shape_id not in it.shape_ids:
+            it.shape_ids.append(t.shape_id)
+            sh = by_id.get(t.shape_id)
+            if sh is None or sh.parent is None or sh.parent not in it.shape_ids:
+                it.roots.append(t.shape_id)
 
 
 # ----------------------------------------------------------------------------- units & items
@@ -353,6 +381,22 @@ def _segments(s: RShape) -> list[tuple[str, float, bool, str, str | None]]:
     return out
 
 
+def _merge_wrapped(segs: list) -> tuple[list, list[int]]:
+    """Строки одного абзаца в одном стиле, разбитые a:br, — это ручной перенос одной фразы, а не отдельные части:
+    иначе в каждую строку пишется своя фраза и текст склеивается («…ассистентаМы запускаем…»)."""
+    out, n = [], []
+    for seg in segs:
+        txt, sz, b, sep, col = seg
+        if out and sep == "br" and (round(out[-1][1]), out[-1][2], out[-1][4]) == (round(sz), b, col):
+            prev = out[-1]
+            out[-1] = (f"{prev[0]} {txt}", prev[1], prev[2], prev[3], prev[4])
+            n[-1] += 1
+        else:
+            out.append(seg)
+            n.append(1)
+    return out, n
+
+
 def _slot(s: RShape, title: RShape | None, item: int | None, body_size: float, items: list[ItemGroup],
           by_id: dict[str, RShape], shapes: list[RShape], m: TextMeasurer, W: float, H: float,
           decor: set[str] = frozenset(), ignore: set[str] = frozenset(), occ=None) -> TextSlot:
@@ -399,7 +443,7 @@ def _slot(s: RShape, title: RShape | None, item: int | None, body_size: float, i
     if not s.wrap:                         # строка без переноса: ёмкость — по ширине демо-текста с небольшим запасом
         chars = max(chars, int(len(s.text.split("\n")[0]) * 1.3) + 1)
     parts: list[SlotPart] = []
-    segs = _segments(s)
+    segs, nlines = _merge_wrapped(_segments(s))
     if role not in (SlotRole.bullets, SlotRole.title) and len(segs) >= 2 and len({(round(x[1]), x[2]) for x in segs}) > 1:
         used_h = 0.0
         for i, (txt, sz, b, _sep, col) in enumerate(segs):
@@ -411,7 +455,8 @@ def _slot(s: RShape, title: RShape | None, item: int | None, body_size: float, i
                 c, _ = m.capacity_chars(fam, sz, cap.w * W, max(sz * 1.25 / 72, cap.h * H - used_h), b, ls)
             prole = SlotRole.number if _NUMERIC.match(txt) else SlotRole.heading if (b or sz > min(x[1] for x in segs)) and i == 0 \
                 else SlotRole.body
-            parts.append(SlotPart(role=prole, size_pt=sz, bold=b, max_chars=max(4, c), demo=txt, color=col))
+            parts.append(SlotPart(role=prole, size_pt=sz, bold=b, max_chars=max(4, c), demo=txt, color=col,
+                                  lines=nlines[i]))
     container = (s.fill_kind in ("solid", "grad", "img") or s.line is not None) and (
         s.box.area > 0.03 or any(o is not s and s.box.contains_point(o.box.cx, o.box.cy) for o in shapes if o.depth >= s.depth))
     return TextSlot(shape_id=s.id, role=role, box=tb, text_box=s.text_box, grow_box=grow, wide_box=wide, item=item,

@@ -281,7 +281,7 @@ def set_text(sp, tf: TextFill, slot: TextSlot | None) -> None:
     if not paras:
         paras = [etree.SubElement(txb, q("a:p"))]
     if slot is not None and slot.parts and len(slot.parts) > 1:
-        _set_composite(txb, paras, tf)
+        _set_composite(txb, paras, tf, [p.lines for p in slot.parts])
         return
     filled = [p for p in paras if any(_run_text(c).strip() for c in p if etree.QName(c).localname in ("r", "fld"))]
     templates = filled or [p for p in paras if p.find(q("a:r")) is not None] or paras[:1]
@@ -315,12 +315,18 @@ def _run_text(r) -> str:
     return (t.text or "") if t is not None else ""
 
 
-def _set_composite(txb, paras, tf: TextFill) -> None:
-    """«ХХ% + подпись»: часть i пишется в i-й сегмент образца с его собственным стилем."""
+def _set_composite(txb, paras, tf: TextFill, lines: list[int] | None = None) -> None:
+    """«ХХ% + подпись»: часть i пишется в i-й сегмент образца с его собственным стилем. Часть, занимающая
+    несколько строк образца (ручной перенос через a:br), пишется в первую строку, остальные её строки удаляются."""
     segs = [(p, seg) for p in paras for seg in _segments(p) if "".join(
         (c.find(q("a:t")).text or "") for c in seg if c.find(q("a:t")) is not None).strip()]
-    for i, (p, seg) in enumerate(segs):
-        if i < len(tf.paragraphs) and tf.paragraphs[i].strip():
+    if not lines or sum(lines) != len(segs):
+        lines = [1] * len(segs)
+    owner = [i for i, k in enumerate(lines) for _ in range(k)]           # номер части для каждой строки образца
+    for j, (p, seg) in enumerate(segs):
+        i = owner[j]
+        head = j == 0 or owner[j - 1] != i
+        if head and i < len(tf.paragraphs) and tf.paragraphs[i].strip():
             first = max(seg, key=lambda c: len(_run_text(c).strip()))
             for c in seg:
                 if c is not first:

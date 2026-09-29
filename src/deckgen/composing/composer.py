@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import re
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -39,7 +40,8 @@ def compose_variant(outline: Outline, tm: TemplateModel, pack: ContentPack, vari
     deck = {"title": outline.title, "total": len(slides), "titles": [o.title for o in slides]}
 
     with ThreadPoolExecutor(max_workers=max(1, s.llm.max_concurrency)) as ex:
-        written = list(ex.map(lambda i: write_slide(slides[i], chosen[i], keeps[i], pack, v, deck, llm, prompts),
+        written = list(ex.map(lambda i: write_slide(slides[i], chosen[i], keeps[i], pack, v, deck, llm, prompts,
+                                                       proof=s.composing.proofread),
                               range(len(slides))))
     t_write = time.perf_counter()
 
@@ -65,6 +67,22 @@ def compose_variant(outline: Outline, tm: TemplateModel, pack: ContentPack, vari
         timings={"select_write": t_write - t0, "compose": time.perf_counter() - t0},
         llm_mode="llm" if modes == {"llm"} else "offline" if modes <= {"offline"} else "mixed",
     )
+
+
+def ordinal_text(n: int, demo: str) -> str:
+    """Номер шага в формате образца: «01», «1.», «1)», «1»."""
+    d = demo.strip()
+    val = f"{n:02d}" if d.startswith("0") else str(n)
+    return val + (d[-1] if d[-1:] in ".)" else "")
+
+
+def _free_ordinal_ranks(t: TemplateSlide) -> dict[str, int]:
+    """Номера вне карточек идут подряд от первого номера образца: дизайнерское «01 02 04» → «01 02 03»."""
+    free = [x for x in t.texts if x.role == SlotRole.ordinal and x.item is None]
+    vals = {x.shape_id: int(re.sub(r"\D", "", x.demo_text) or 0) for x in free}
+    order = sorted(free, key=lambda x: (vals[x.shape_id], x.box.cy, x.box.cx))
+    start = min(vals.values(), default=1) or 1
+    return {x.shape_id: start + i for i, x in enumerate(order)}
 
 
 def _keep(o: OutlineSlide, t: TemplateSlide) -> int:
@@ -120,16 +138,17 @@ def _plan_slide(i: int, o: OutlineSlide, t: TemplateSlide, keep: int, texts: dic
         visual_ids = set(t.visual.replace_ids)
     # --- тексты
     over: list[tuple[str, str, int]] = []
+    free_rank = _free_ordinal_ranks(t)
     for slot in t.texts:
         if slot.shape_id in ps.delete_ids or slot.shape_id in visual_ids or slot.role == SlotRole.footer:
             continue
         if slot.role == SlotRole.ordinal:
             demo = slot.demo_text.strip()
-            if slot.item is None:                     # нумерация вне карточек — как у дизайнера
-                val = demo
-            else:
-                n = slot.item + 1
-                val = f"{n:02d}" if demo.startswith("0") else str(n)
+            if slot.item is not None and slot.item >= keep:   # номер удалённой карточки — не оставлять сиротой
+                ps.delete_ids.append(slot.shape_id)
+                continue
+            n = slot.item + 1 if slot.item is not None else free_rank.get(slot.shape_id, 1)
+            val = ordinal_text(n, demo)
             ps.texts.append(TextFill(shape_id=slot.shape_id, paragraphs=[val], role=slot.role))
             _readable(ps, slot, slot.size_pt, tm.design)
             continue

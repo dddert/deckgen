@@ -84,6 +84,7 @@ class PromptSettings(BaseModel):
     audit_semantic: str = "v1"
     image_prompt: str = "v1"
     rewrite: str = "v1"
+    proofread: str = "v1"
 
 
 class ParsingSettings(BaseModel):
@@ -99,6 +100,7 @@ class ComposingSettings(BaseModel):
     min_font_scale: float = 0.8
     shorten_rounds: int = 1
     reflow_items: bool = True
+    proofread: bool = True             # корректура текстов слайда моделью (правка принимается, если цифры те же)
 
 
 class AuditSettings(BaseModel):

@@ -15,14 +15,24 @@ agents:
             changelog: "схема ответа строится под слоты образца (ключи = id фигур), составные слоты — списком частей" }
       v2: { file: slide_writer/v2.md, skills: [template_fit/v1, density/v1, visual_design/v1],
             changelog: "скилл visual_design; подсказки по слоту из карты занятости (строк помещается, рядом графика шаблона); самопроверка перед ответом" }
+      v3: { file: slide_writer/v3.md, skills: [template_fit/v1, density/v1, visual_design/v1, literacy/v1],
+            changelog: "скилл literacy: орфография, пунктуация, цифры ровно как в фактах, нумерация по порядку; самопроверка корректора" }
   shorten:
     description: Сократить тексты, которые не влезли в рамку после подбора кегля
     versions:
       v1: { file: shorten/v1.md, skills: [template_fit/v1], changelog: "первая версия" }
+      v2: { file: shorten/v2.md, skills: [template_fit/v1, literacy/v1],
+            changelog: "сокращать перефразированием, без обрыва на предлоге/скобке; скилл literacy" }
   rewrite:
     description: Переписать слайд по замечанию аудита, выбранному пользователем
     versions:
       v1: { file: rewrite/v1.md, skills: [storytelling/v1, template_fit/v1], changelog: "первая версия" }
+      v2: { file: rewrite/v2.md, skills: [storytelling/v1, template_fit/v1, literacy/v1],
+            changelog: "скилл literacy: грамотность, цифры как в фактах, нумерация по порядку" }
+  proofread:
+    description: Корректура текстов слайда — только орфография и пунктуация; правка принимается, если цифры не изменились
+    versions:
+      v1: { file: proofread/v1.md, skills: [literacy/v1], changelog: "первая версия" }
   slide_classifier:
     description: VLM — тип слайда-образца по картинке и эвристическому разбору
     versions:
@@ -60,6 +70,10 @@ skills:
     description: Критерии визуальной проверки слайда (что считать нарушением)
     source: "ТЗ VK Tech, Приложение 1; PPTEval (PPTAgent) — измерения Content/Design/Coherence; APCA (Myndex/apca-w3)"
     versions: { v1: { file: visual_qa/v1.md }, v2: { file: visual_qa/v2.md } }
+  literacy:
+    description: Грамотность и точность цифр (орфография, пунктуация, типографика, цифры как в фактах, нумерация по порядку)
+    source: "правила русской орфографии и пунктуации; типографика — Бюро Горбунова"
+    versions: { v1: { file: literacy/v1.md } }
   visual_design:
     description: Как устроен хороший дизайн слайда и что в нём зависит от текста (иерархия, воздух, текст и графика, русская типографика, пустые слова)
     source: "адаптировано из Leonxlnx/taste-skill (MIT) и Anthropic canvas-design; Бюро Горбунова; M. Butterick «Practical Typography»"
