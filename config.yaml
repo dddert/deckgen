@@ -1,0 +1,111 @@
+# Единый конфиг воспроизводимого запуска (финальная сдача: «сетап и запуск конфиг-файлом»).
+# ${VAR:-default} берётся из окружения. Любой ключ можно переопределить: DECKGEN__<SECTION>__<KEY>=...
+# Например: DECKGEN__LLM__PROVIDER=offline — прогон без модели (эвристический планировщик).
+
+run:
+  seed: 42
+  target_slides: 12              # 10–15 по ТЗ, пользователь может задать своё
+  max_generation_seconds: 300    # ТЗ: одна колода не дольше 5 минут
+  workdir: ${DECKGEN_OUTPUTS:-./data/outputs}
+  templates_dir: ./data/templates
+
+# Одна мультимодальная модель закрывает LLM и VLM. На RTX A6000 (48 ГБ, Ampere) —
+# Qwen3.8-27B-FP8 через vLLM (FP8-веса исполняются Marlin-ядрами W8A16). См. MODELS.md.
+# Топ-10 (инференс VK): меняются только base_url / api_key / model.
+llm:
+  provider: ${LLM_PROVIDER:-openai_compat}   # openai_compat | offline
+  base_url: ${LLM_BASE_URL:-http://localhost:18000/v1}
+  api_key: ${LLM_API_KEY:-none}
+  model: ${LLM_SERVED_NAME:-qwen}
+  temperature: 0.4
+  top_p: 0.8
+  max_tokens: 3000
+  timeout_seconds: 120
+  structured_output: true        # response_format=json_schema (guided decoding vLLM)
+  max_concurrency: 16            # параллельных запросов; vLLM батчит их сам
+  json_retries: 2
+  fallback_to_offline: true      # модель недоступна/сломала JSON -> эвристика, колода всё равно собирается
+  extra_body:
+    top_k: 20
+    chat_template_kwargs: { enable_thinking: false }   # thinking ломает строгий JSON и съедает бюджет 5 минут
+
+vlm:
+  provider: ${VLM_PROVIDER:-openai_compat}
+  base_url: ${VLM_BASE_URL:-http://localhost:18000/v1}
+  api_key: ${VLM_API_KEY:-none}
+  model: ${VLM_SERVED_NAME:-qwen}
+  temperature: 0.0
+  top_p: 1.0
+  max_tokens: 900
+  timeout_seconds: 90
+  structured_output: true
+  max_concurrency: 16
+  json_retries: 1
+  fallback_to_offline: true
+  extra_body:
+    chat_template_kwargs: { enable_thinking: false }
+
+text_to_image:                   # ⭐ задача со звёздочкой
+  enabled: ${T2I_ENABLED:-false}
+  model: black-forest-labs/FLUX.2-klein-4B      # Apache 2.0, 4B, 4 шага
+  steps: 4
+  guidance: 1.0
+  width: 1024
+  height: 576
+  cpu_offload: true              # на одной A6000 рядом с vLLM (gpu-util 0.72)
+  min_free_vram_gb: 10           # меньше свободной памяти — не грузим, берём ассеты шаблона/пакета
+  max_images_per_deck: 4
+
+prompts:
+  registry: ./prompts/registry.yaml
+  skills_dir: ./skills
+  # Закреплённые версии агентов (меняются здесь, не в коде; в артефакты пишутся фактические)
+  skeleton: v1
+  slide_writer: v2
+  shorten: v1
+  slide_classifier: v1
+  audit_semantic: v2
+  image_prompt: v1
+  rewrite: v1
+
+parsing:
+  cache: true
+  render_previews: true          # PNG слайдов-образцов (UI + VLM-классификация)
+  vlm_classify: true             # уточнять тип слайда-образца моделью (на сервере)
+  render_dpi: 110
+  max_shapes_per_layout: 70      # больше — служебный слайд (библиотека иконок и т.п.)
+
+composing:
+  variants: [balanced, visual, compact]
+  min_font_scale: 0.8            # ниже — не ужимаем, а сокращаем текст
+  shorten_rounds: 1              # сколько раз просить модель сократить непоместившийся текст
+  reflow_items: true             # оставшиеся карточки равномерно распределяются по месту удалённых
+
+audit:
+  contrast_min: 4.5              # WCAG 2 — только в отчёт; решение принимается по APCA (|Lc| ≥ 45 крупный / 55 обычный)
+  max_bullets: 6
+  max_words_per_bullet: 15
+  table_max_rows: 7
+  table_max_cols: 5
+  chart_max_series: 5
+  fill_ratio_min: 0.25
+  fill_ratio_max: 0.75
+  max_font_families: 2
+  semantic_checks: true          # VLM по картинке слайда (недетерминированные)
+  # что исправляется без вопроса (id проверки или исправления); остальное — по выбору пользователя в UI
+  auto_fix: [text_overflow, leftover_placeholder, integrity.empty_slide, integrity.duplicate_slides, off_palette_color,
+             low_contrast, chart_labels, trim_bullets, shorten_text, strip_numbers]
+  auto_fix_rounds: 2
+
+export:
+  formats: [pptx, pdf, html]
+  pdf_backend: ${PDF_BACKEND:-auto}   # auto | soffice | powerpoint (macOS, для локальной отладки) | none
+  soffice_bin: ${SOFFICE_BIN:-soffice}
+  prune_unused_layouts: true     # без неиспользованных макетов файл в 5–10 раз легче
+  html_image_max_px: 1600
+
+api:
+  host: ${API_HOST:-127.0.0.1}
+  port: ${API_PORT:-18080}
+  cors_origins: ["http://localhost:5173", "http://127.0.0.1:5173"]
+  max_upload_mb: 80

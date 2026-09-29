@@ -1,0 +1,66 @@
+# Реестр агентов и скиллов (п. 4 ТЗ «версионирование скиллов и агентов»).
+# Правило: файл версии не редактируется на месте — новая версия + changelog, закрепление в config.yaml.
+# Каждая версия агента явно перечисляет скиллы (имя/версия), которые подставляются в {{ skills }}.
+
+agents:
+  skeleton:
+    description: Бриф + факты + таблицы + каталог типов слайдов шаблона -> каркас колоды (состав, порядок, заголовки-выводы)
+    versions:
+      v1: { file: skeleton/v1.md, skills: [storytelling/v1, density/v1, dataviz/v1],
+            changelog: "первая версия v2: один короткий вызов на колоду, тексты пишет slide_writer параллельно" }
+  slide_writer:
+    description: Тексты одного слайда под слоты конкретного слайда-образца (ёмкость в знаках, роли, карточки)
+    versions:
+      v1: { file: slide_writer/v1.md, skills: [template_fit/v1, density/v1],
+            changelog: "схема ответа строится под слоты образца (ключи = id фигур), составные слоты — списком частей" }
+      v2: { file: slide_writer/v2.md, skills: [template_fit/v1, density/v1, visual_design/v1],
+            changelog: "скилл visual_design; подсказки по слоту из карты занятости (строк помещается, рядом графика шаблона); самопроверка перед ответом" }
+  shorten:
+    description: Сократить тексты, которые не влезли в рамку после подбора кегля
+    versions:
+      v1: { file: shorten/v1.md, skills: [template_fit/v1], changelog: "первая версия" }
+  rewrite:
+    description: Переписать слайд по замечанию аудита, выбранному пользователем
+    versions:
+      v1: { file: rewrite/v1.md, skills: [storytelling/v1, template_fit/v1], changelog: "первая версия" }
+  slide_classifier:
+    description: VLM — тип слайда-образца по картинке и эвристическому разбору
+    versions:
+      v1: { file: slide_classifier/v1.md, skills: [], changelog: "эвристика подаётся как гипотеза, модель подтверждает/исправляет" }
+  audit_semantic:
+    description: VLM — 11 вопросов Приложения 1 ТЗ по картинке готового слайда
+    versions:
+      v1: { file: audit_semantic/v1.md, skills: [visual_qa/v1],
+            changelog: "текст слайда подаётся рядом с картинкой; «нет того, о чём вопрос» = да" }
+      v2: { file: audit_semantic/v2.md, skills: [visual_qa/v2],
+            changelog: "вопросы дизайна 12–14: текст на графике, читаемость на фоне, баланс (дополняют детерминированные layout.text_over_graphics и template.contrast по APCA)" }
+  image_prompt:
+    description: Промпт для text-to-image по смыслу слайда и палитре шаблона
+    versions:
+      v1: { file: image_prompt/v1.md, skills: [], changelog: "первая версия" }
+
+skills:
+  storytelling:
+    description: Пирамида Минто, заголовки-выводы, «тест призрачной колоды», связность соседних слайдов
+    source: "адаптировано по идеям Gabberflast/academic-pptx-skill (MIT) и Akxan/ppt-agent-skill (MIT)"
+    versions: { v1: { file: storytelling/v1.md } }
+  density:
+    description: Лимиты плотности Приложения 1 ТЗ (буллеты, слова, таблицы, серии, заполнение)
+    source: "ТЗ VK Tech, Приложение 1"
+    versions: { v1: { file: density/v1.md } }
+  dataviz:
+    description: Выбор способа визуализации данных и правила подписи графиков
+    source: "адаптировано по идеям Akxan/ppt-agent-skill (MIT), правила ТЗ"
+    versions: { v1: { file: dataviz/v1.md } }
+  template_fit:
+    description: Как писать текст в слоты чужого шаблона (ёмкость, параллелизм карточек, цифры только из источников)
+    source: "подход edit-based генерации PPTAgent (icip-cas/PPTAgent, MIT)"
+    versions: { v1: { file: template_fit/v1.md } }
+  visual_qa:
+    description: Критерии визуальной проверки слайда (что считать нарушением)
+    source: "ТЗ VK Tech, Приложение 1; PPTEval (PPTAgent) — измерения Content/Design/Coherence; APCA (Myndex/apca-w3)"
+    versions: { v1: { file: visual_qa/v1.md }, v2: { file: visual_qa/v2.md } }
+  visual_design:
+    description: Как устроен хороший дизайн слайда и что в нём зависит от текста (иерархия, воздух, текст и графика, русская типографика, пустые слова)
+    source: "адаптировано из Leonxlnx/taste-skill (MIT) и Anthropic canvas-design; Бюро Горбунова; M. Butterick «Practical Typography»"
+    versions: { v1: { file: visual_design/v1.md } }

@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+data/outputs/*
+!data/outputs/.gitkeep
+web/node_modules/
+web/dist/
+assets/fonts/*.ttf
+.env
+.DS_Store
+.ruff_cache/

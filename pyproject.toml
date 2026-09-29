@@ -1,0 +1,44 @@
+[project]
+name = "deckgen"
+version = "2.0.0"
+description = "Цифровой дизайнер презентаций v2: генерация колоды правкой слайдов-образцов чужого шаблона"
+requires-python = ">=3.11"
+dependencies = [
+    "python-pptx>=1.0.2",
+    "lxml>=5.0",
+    "pydantic>=2.6",
+    "pyyaml>=6.0",
+    "jinja2>=3.1",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "python-multipart>=0.0.9",
+    "openai>=1.30",            # OpenAI-совместимый клиент: vLLM локально / инференс VK
+    "pillow>=10.0",
+    "pypdfium2>=4.30",         # PDF -> PNG без системного poppler
+    "typer>=0.12",
+    "rich>=13.0",
+    "openpyxl>=3.1",           # таблицы .xlsx в контент-пакете
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "ruff"]
+docs = ["pypdf>=4.0", "python-docx>=1.1"]            # тексты из .pdf / .docx в материалах
+t2i = ["torch>=2.4", "diffusers>=0.36", "transformers>=4.56", "accelerate>=1.0"]
+
+[project.scripts]
+deckgen = "deckgen.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/deckgen"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "."]

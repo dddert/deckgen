@@ -1,0 +1,37 @@
+# Вариант с Docker (если демон доступен). Порты слушают только 127.0.0.1. Запуск: docker compose up -d --build
+name: deckgen2
+services:
+  llm:
+    image: ${VLLM_IMAGE:-vllm/vllm-openai:latest}
+    ipc: host
+    environment: { HF_HOME: /models, HF_TOKEN: "${HF_TOKEN:-}" }
+    volumes: ["${DECKGEN_DATA_DIR:-./.deckgen}/models:/models"]
+    command:
+      - --model=${LLM_MODEL:-Qwen/Qwen3.8-27B-FP8}
+      - --served-model-name=qwen
+      - --max-model-len=${LLM_MAX_LEN:-32768}
+      - --max-num-seqs=${LLM_MAX_SEQS:-16}
+      - --gpu-memory-utilization=${VLLM_GPU_UTIL:-0.88}
+      - --limit-mm-per-prompt={"image":1,"video":0}
+      - --enable-prefix-caching
+      - --reasoning-parser=qwen3
+      - --port=8000
+    ports: ["127.0.0.1:${LLM_PORT:-18000}:8000"]
+    deploy:
+      resources:
+        reservations:
+          devices: [{ driver: nvidia, device_ids: ["${GPU_ID:-0}"], capabilities: [gpu] }]
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/v1/models', timeout=4)"]
+      interval: 30s
+      retries: 60
+      start_period: 120s
+  api:
+    build: .
+    env_file: .env
+    environment:
+      LLM_BASE_URL: http://llm:8000/v1
+      VLM_BASE_URL: http://llm:8000/v1
+    volumes: ["${DECKGEN_DATA_DIR:-./.deckgen}/outputs:/data/outputs"]
+    ports: ["127.0.0.1:${API_PORT:-18080}:8080"]
+    depends_on: { llm: { condition: service_healthy } }
